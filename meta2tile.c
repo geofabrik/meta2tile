@@ -10,6 +10,9 @@
 // WITH_MBTILES lets you generate mbtiles files instead of simple
 // tile directories.
 
+#define PNG_MAGIC "\211PNG\r\n\032\n"
+#define JPEG_MAGIC "\xFF\xD8"
+
 #define _GNU_SOURCE
 
 #include <stdio.h>
@@ -365,6 +368,7 @@ int expand_meta(const char *name)
 {
     int fd;
     char header[4096];
+    const char *filetype;
     int x, y, z;
     size_t pos;
     void *buf;
@@ -434,6 +438,29 @@ int expand_meta(const char *name)
             return -1;
         }
     }
+
+    // determine file type from first tile in meta
+    // (mbtiles is type agnostic)
+    if (!mbtiles)
+    {
+        if (!memcmp(buf + m->index[0].offset, JPEG_MAGIC, 2))
+        {
+            filetype = "jpg";
+        }
+        else if (!memcmp(buf + m->index[0].offset, PNG_MAGIC, 8))
+        {
+            filetype = "png";
+        }
+        else
+        {
+            fprintf(stderr, "cannot detect image type in meta file %s\n", name);
+            munmap(buf, st.st_size);
+            close(fd);            
+            return -1;
+        }
+    }
+
+
 
     int create_dir = 0;
 
@@ -510,7 +537,7 @@ int expand_meta(const char *name)
                 create_dir = 0;
             }
 
-            sprintf(path, "%s/%d/%d/%d.png", t->pathname, z, tx, ty);
+            sprintf(path, "%s/%d/%d/%d.%s", t->pathname, z, tx, ty, filetype);
             output = open(path, O_WRONLY | O_TRUNC | O_CREAT, 0666);
             if (output == -1)
             {
@@ -597,7 +624,7 @@ int expand_meta(const char *name)
             memcpy(tiledata, buf + m->index[meta].offset, tilesize);
             struct zip_source *s = zip_source_buffer(t->zip_archive, tiledata, tilesize, 1);
             char filename[PATH_MAX];
-            sprintf(filename, "%d/%d/%d.png", z, tx, ty);
+            sprintf(filename, "%d/%d/%d.%s", z, tx, ty, filetype);
             if (!s || zip_add(t->zip_archive, filename, s) < 0)
             {
                 fprintf(stderr, "Failed to insert tile z=%d x=%d y=%d into zip file: %s\n", z, tx, ty, zip_strerror(t->zip_archive));
@@ -721,9 +748,9 @@ static void process_list_from_stdin()
 void usage()
 {
     fprintf(stderr, "Usage: meta2tile [options] sourcedir target\n\n");
-    fprintf(stderr, "Convert .meta files found in source dir to .png in target dir,\n");
+    fprintf(stderr, "Convert .meta files found in source dir to .png/.jpg in target dir,\n");
     fprintf(stderr, "using the standard \"hash\" type directory (5-level) for meta\n");
-    fprintf(stderr, "tiles and the z/x/y.png structure (3-level) for output.\n");
+    fprintf(stderr, "tiles and the z/x/y.png (or .jpg) structure (3-level) for output.\n");
     fprintf(stderr, "\nOptions:\n");
     fprintf(stderr, "--bbox x   specify minlon,minlat,maxlon,maxlat to extract only\n");
     fprintf(stderr, "           meta tiles intersecting that bbox (default: world).\n");
