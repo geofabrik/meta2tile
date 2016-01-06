@@ -33,10 +33,10 @@
 
 #ifdef WITH_MBTILES
 #include "sqlite3.h"
+#include <openssl/md5.h>
 #endif
 #include "store_file.h"
 #include "metatile.h"
-#include <openssl/md5.h>
 
 #ifdef WITH_SHAPE
 #include "ogr_api.h"
@@ -52,6 +52,7 @@
 
 static int verbose = 0;
 static int mbtiles = 0;
+static int noduplicate = 0;
 static int zip = 0;
 static int shape = 0;
 static int num_render = 0;
@@ -72,6 +73,7 @@ struct target
     struct target *next;
 #ifdef WITH_MBTILES
     sqlite3 *sqlite_db;
+    sqlite3_stmt *sqlite_tile_insert;
     sqlite3_stmt *sqlite_map_insert;
     sqlite3_stmt *sqlite_images_insert;
 #endif
@@ -205,44 +207,72 @@ void setup_mbtiles()
         }
         if (verbose) fprintf(stderr, "opened '%s' for mbtiles output\n", t->pathname);
 
-        if (sqlite3_exec(t->sqlite_db, "create table map ("
-            "zoom_level integer, tile_column integer, tile_row integer, "
-            "tile_id text)", NULL, NULL, &errmsg) != SQLITE_OK)
+        if (noduplicate)
         {
-            fprintf(stderr, "Cannot create map table: %s\n", errmsg);
-            exit(1);
-        }
+            // this mode stores tiles keyed to their md5 sum, and the externally
+            // accessed tile table is then just a view. A tile appearing twice is
+            // stored only once
 
-        if (sqlite3_exec(t->sqlite_db, "create table images ("
-            "tile_data blob, tile_id text)", NULL, NULL, &errmsg) != SQLITE_OK)
-        {
-            fprintf(stderr, "Cannot create images table: %s\n", errmsg);
-            exit(1);
-        }
+            if (sqlite3_exec(t->sqlite_db, "create table map ("
+                "zoom_level integer, tile_column integer, tile_row integer, "
+                "tile_id text)", NULL, NULL, &errmsg) != SQLITE_OK)
+            {
+                fprintf(stderr, "Cannot create map table: %s\n", errmsg);
+                exit(1);
+            }
 
-        if (sqlite3_exec(t->sqlite_db, "create unique index map_index on map(zoom_level,tile_column,tile_row)", NULL, NULL, &errmsg)) 
-        {
-            fprintf(stderr, "Cannot create map index: %s\n", errmsg);
-            exit(1);
-        }
-        if (sqlite3_exec(t->sqlite_db, "create unique index images_id on images (tile_id)", NULL, NULL, &errmsg)) 
-        {
-            fprintf(stderr, "Cannot create images index: %s\n", errmsg);
-            exit(1);
-        }
+            if (sqlite3_exec(t->sqlite_db, "create table images ("
+                "tile_data blob, tile_id text)", NULL, NULL, &errmsg) != SQLITE_OK)
+            {
+                fprintf(stderr, "Cannot create images table: %s\n", errmsg);
+                exit(1);
+            }
 
-        if (sqlite3_prepare_v2(t->sqlite_db, "insert into map (zoom_level, tile_row, tile_column, tile_id) "
-            "values (?, ?, ?, ?)", -1, &(t->sqlite_map_insert), NULL) != SQLITE_OK)
-        {
-            fprintf(stderr, "Cannot prepare statement: %s\n", sqlite3_errmsg(t->sqlite_db));
-            exit(1);
-        }
+            if (sqlite3_exec(t->sqlite_db, "create unique index map_index on map(zoom_level,tile_column,tile_row)", NULL, NULL, &errmsg)) 
+            {
+                fprintf(stderr, "Cannot create map index: %s\n", errmsg);
+                exit(1);
+            }
+            if (sqlite3_exec(t->sqlite_db, "create unique index images_id on images (tile_id)", NULL, NULL, &errmsg)) 
+            {
+                fprintf(stderr, "Cannot create images index: %s\n", errmsg);
+                exit(1);
+            }
 
-        if (sqlite3_prepare_v2(t->sqlite_db, "insert into images (tile_data, tile_id) "
-            "values (?, ?)", -1, &(t->sqlite_images_insert), NULL) != SQLITE_OK)
+            if (sqlite3_prepare_v2(t->sqlite_db, "insert into map (zoom_level, tile_row, tile_column, tile_id) "
+                "values (?, ?, ?, ?)", -1, &(t->sqlite_map_insert), NULL) != SQLITE_OK)
+            {
+                fprintf(stderr, "Cannot prepare statement: %s\n", sqlite3_errmsg(t->sqlite_db));
+                exit(1);
+            }
+
+            if (sqlite3_prepare_v2(t->sqlite_db, "insert into images (tile_data, tile_id) "
+                "values (?, ?)", -1, &(t->sqlite_images_insert), NULL) != SQLITE_OK)
+            {
+                fprintf(stderr, "Cannot prepare statement: %s\n", sqlite3_errmsg(t->sqlite_db));
+                exit(1);
+            }
+        }
+        else
         {
-            fprintf(stderr, "Cannot prepare statement: %s\n", sqlite3_errmsg(t->sqlite_db));
-            exit(1);
+            // this mode simply stores tiles in a table, and if a tile appears twice,
+            // it is stored twice.
+
+            if (sqlite3_exec(t->sqlite_db, "create table tiles ("
+                "zoom_level integer, tile_column integer, tile_row integer, "
+                "tile_data blob)", NULL, NULL, &errmsg) != SQLITE_OK)
+            {
+                fprintf(stderr, "Cannot create tile table: %s\n", errmsg);
+                exit(1);
+            }
+
+            if (sqlite3_prepare_v2(t->sqlite_db, 
+                "insert into tiles (zoom_level, tile_row, tile_column, tile_data) "
+                "values (?, ?, ?, ?)", -1, &(t->sqlite_tile_insert), NULL) != SQLITE_OK)
+            {
+                fprintf(stderr, "Cannot prepare statement: %s\n", sqlite3_errmsg(t->sqlite_db));
+                exit(1);
+            }
         }
 
         if (sqlite3_exec(t->sqlite_db, "create table metadata ("
@@ -312,6 +342,23 @@ void shutdown_mbtiles()
             fprintf(stderr, "Cannot end transaction: %s\n", errmsg);
             exit(1);
         }
+        if (noduplicate)
+        {
+            if (sqlite3_exec(t->sqlite_db, "create unique index map_index on map(zoom_level,tile_column,tile_row)", NULL, NULL, &errmsg))
+            {
+                fprintf(stderr, "Cannot create map index: %s\n", errmsg);
+                exit(1);
+            }
+        }
+        else
+        {
+            if (sqlite3_exec(t->sqlite_db, "create unique index tile_index on tiles(zoom_level,tile_column,tile_row)", NULL, NULL, &errmsg))
+            {
+                fprintf(stderr, "Cannot create tile index: %s\n", errmsg);
+                exit(1);
+            }
+        }
+
         if (verbose) fprintf(stderr, "finalised '%s'\n", t->pathname);
         // process next target
         t = t->next;
@@ -576,51 +623,66 @@ int expand_meta(const char *name)
         {
 #ifdef WITH_MBTILES
             ty = (1<<z)-ty-1;
-            //const unsigned char *d;
-            //unsigned char *md;
-            //MD5_Init(ctx);
-            //MD5_Update(ctx, buf + m->index[meta].offset, m->index[meta].size);
-            //MD5_Final(md, ctx);
-            unsigned char md[16];
-            void *tiledata = buf + m->index[meta].offset;
-            int tilesize = m->index[meta].size;
-            MD5(tiledata, tilesize, md);
-            const char *md_tmp;
-            char md_hex[33];
-            md_hex[32] = 0;
-            bintohex(md, md_hex);
-            sqlite3_reset(t->sqlite_map_insert);
-            sqlite3_bind_int(t->sqlite_map_insert, 1, z);
-            sqlite3_bind_int(t->sqlite_map_insert, 3, tx);
-            sqlite3_bind_int(t->sqlite_map_insert, 2, ty);
-            sqlite3_bind_text(t->sqlite_map_insert, 4, md_hex, 32, SQLITE_STATIC);
-            if (sqlite3_step(t->sqlite_map_insert) != SQLITE_DONE)
+
+            if (noduplicate)
             {
-                //fprintf(stderr, "Failed to insert tile z=%d x=%d y=%d to map table: %s\n", z, tx, ty, sqlite3_errmsg(t->sqlite_db));
-                //munmap(buf, st.st_size);
-                //close(fd);
-                //return -7;
+                unsigned char md[16];
+                void *tiledata = buf + m->index[meta].offset;
+                int tilesize = m->index[meta].size;
+                MD5(tiledata, tilesize, md);
+                const char *md_tmp;
+                char md_hex[33];
+                md_hex[32] = 0;
+                bintohex(md, md_hex);
+                sqlite3_reset(t->sqlite_map_insert);
+                sqlite3_bind_int(t->sqlite_map_insert, 1, z);
+                sqlite3_bind_int(t->sqlite_map_insert, 3, tx);
+                sqlite3_bind_int(t->sqlite_map_insert, 2, ty);
+                sqlite3_bind_text(t->sqlite_map_insert, 4, md_hex, 32, SQLITE_STATIC);
+                if (sqlite3_step(t->sqlite_map_insert) != SQLITE_DONE)
+                {
+                    fprintf(stderr, "Failed to insert tile z=%d x=%d y=%d to map table: %s\n", z, tx, ty, sqlite3_errmsg(t->sqlite_db));
+                    munmap(buf, st.st_size);
+                    close(fd);
+                    return -7;
+                }
+                sqlite3_reset(t->sqlite_images_insert);
+                sqlite3_bind_blob(t->sqlite_images_insert, 1, tiledata, tilesize, SQLITE_STATIC);
+                sqlite3_bind_text(t->sqlite_images_insert, 2, md_hex, 32, SQLITE_STATIC);
+                int res = sqlite3_step(t->sqlite_images_insert);
+                // gives SQLITE_CONSTRAINT when unique key violated
+                if (res != SQLITE_DONE && res != SQLITE_CONSTRAINT)
+                {
+                    fprintf(stderr, "Failed to insert tile z=%d x=%d y=%d to images table: %s\n", z, tx, ty, sqlite3_errmsg(t->sqlite_db));
+                    munmap(buf, st.st_size);
+                    close(fd);
+                    return -7;
+                }
             }
-            sqlite3_reset(t->sqlite_images_insert);
-            sqlite3_bind_blob(t->sqlite_images_insert, 1, tiledata, tilesize, SQLITE_STATIC);
-            sqlite3_bind_text(t->sqlite_images_insert, 2, md_hex, 32, SQLITE_STATIC);
-            if (sqlite3_step(t->sqlite_images_insert) != SQLITE_DONE)
+            else
             {
-                //fprintf(stderr, "Failed to insert tile z=%d x=%d y=%d to images table: %s\n", z, tx, ty, sqlite3_errmsg(t->sqlite_db));
-                //munmap(buf, st.st_size);
-                //close(fd);
-                //return -7;
+                sqlite3_reset(t->sqlite_tile_insert);
+                sqlite3_bind_int(t->sqlite_tile_insert, 1, z);
+                sqlite3_bind_int(t->sqlite_tile_insert, 3, tx);
+                sqlite3_bind_int(t->sqlite_tile_insert, 2, ty);
+                sqlite3_bind_blob(t->sqlite_tile_insert, 4, buf + m->index[meta].offset, m->index[meta].size, SQLITE_STATIC);
+                if (sqlite3_step(t->sqlite_tile_insert) != SQLITE_DONE)
+                {
+                    fprintf(stderr, "Failed to insert tile z=%d x=%d y=%d: %s\n", z, tx, ty, sqlite3_errmsg(t->sqlite_db));
+                    munmap(buf, st.st_size);
+                    close(fd);
+                    return -7;
+                }
             }
-            //else printf("Inserted tile %d/%d/%d into %s\n", z, tx, ty, t->pathname);
+            if (verbose) printf("Inserted tile %d/%d/%d into %s\n", z, tx, ty, t->pathname);
 #endif
         }
         else if (zip)
         {
 #ifdef WITH_ZIP
-            //void *tiledata = buf + m->index[meta].offset;
-            //int tilesize = m->index[meta].size;
             int tilesize = m->index[meta].size;
             void *tiledata = malloc(tilesize);
+            // need to make a copy since libzip expects to take ownership
             memcpy(tiledata, buf + m->index[meta].offset, tilesize);
             struct zip_source *s = zip_source_buffer(t->zip_archive, tiledata, tilesize, 1);
             char filename[PATH_MAX];
@@ -762,6 +824,8 @@ void usage()
     fprintf(stderr, "--meta k=v set k=v in the MBTiles metadata table (MBTiles spec\n");
     fprintf(stderr, "           mandates use of name, type, version, description, format).\n");
     fprintf(stderr, "           Can occur multiple times.\n");
+    fprintf(stderr, "--noduplicate use tile's md5 hash as a key to store tiles under\n");
+    fprintf(stderr, "           in mbtiles file; saves space when many tiles are identical.\n");
 #else
     fprintf(stderr, "--mbtiles  option not available, specify WITH_MBTILES when compiling.\n");
 #endif
@@ -925,6 +989,7 @@ int main(int argc, char **argv)
 #ifdef WITH_MBTILES
             {"mbtiles", 0, 0, 't'},
             {"meta", 1, 0, 'a'},
+            {"noduplicate", 0, 0, 'n'},
 #endif
 #ifdef WITH_ZIP
             {"zip", 0, 0, 'p'},
@@ -942,7 +1007,7 @@ int main(int argc, char **argv)
 
         c = getopt_long(argc, argv, "vhlb:m:z:"
 #ifdef WITH_MBTILES
-        "ta:"
+        "tna:"
 #endif
 #ifdef WITH_ZIP
         "p"
@@ -965,6 +1030,9 @@ int main(int argc, char **argv)
 #ifdef WITH_MBTILES
             case 't':
                 mbtiles=1;
+                break;
+            case 'n':
+                noduplicate=1;
                 break;
             case 'a':
                 if (!handle_meta(optarg))
