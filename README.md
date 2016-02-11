@@ -10,15 +10,16 @@ Options:
 * list ::  instead of converting all meta tiles in input directory, convert only those given (one per line) on stdin.
 * mbtiles ::  instead of writing single tiles to output directory, write a MBTiles file ("target" is a file name then.)
 * meta k=v :: set k=v in the MBTiles metadata table (MBTiles spec mandates use of name, type, version, description, format).  Can occur multiple times.
-* mode x ::  use in conjunction with --zoom or --bbox; mode=glob is faster if you extract more than 10 percent of files, and mode=stat is faster otherwise.
+* mode x ::  use in conjunction with --bbox; mode=glob is faster if you extract more than 10 percent of files, and mode=stat is faster otherwise.
 * shape ::   switch to shape file output mode, in which the "target" is the name of a polygon shape file that has one column named "target" specifying the real target for all tiles that lie inside the respective polygon.
-* zoom x ::  specify a single zoomlevel, a number of comma separated zoom levels, or z0-z1 zoom ranges to convert (default: all).
 * zip ::  instead of writing single tiles to output directory, write a zip file ("target" is a file name then.)
 * verbose :: talk more.
 
---zoom and --bbox don't make sense with --list;
+--bbox doesn't make sense with --list;
 --mbtiles and --zip are mutually exclusive;
 --bbox can be used with --shape but a tile for which no target is defined will not be output even when inside the --bbox range.
+
+There used to be a --zoom option to limit the output to certain zoom levels but it did not work well; to convert just a few zoom levels, run the command several times OR symlink the zoom level directories into a common parent and runn the command on that parent.
 
 Notes for zip output:
 * libzip builds the whole zip file in RAM, so be sure to have enough of that when using --zip.

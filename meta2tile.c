@@ -106,7 +106,6 @@ struct metadata
 
 int mode = MODE_GLOB;
 
-int zoom[MAXZOOM+1];
 float bbox[4] = {-180.0, -90.0, 180.0, 90.0};
 
 int path_to_xyz(const char *path, int *px, int *py, int *pz)
@@ -717,16 +716,15 @@ void display_rate(struct timeval start, struct timeval end, int num)
     fflush(NULL);
 }
 
-// recurive directory processing. 
+// recursive directory processing. 
 // zoomdone signals whether we might still have to 
 // exclude certain directories based on zoom selection,
 // or whether we're already past that.
-static void descend(const char *search, int zoomdone)
+static void descend(const char *search)
 {
     DIR *tiles = opendir(search);
     struct dirent *entry;
     char path[PATH_MAX];
-    int this_is_zoom = -1;
 
     if (verbose>1) fprintf(stderr, "descend to %s\n", search);
 
@@ -744,28 +742,6 @@ static void descend(const char *search, int zoomdone)
         if (!strcmp(entry->d_name, ".") || !strcmp(entry->d_name, ".."))
             continue;
 
-        if (this_is_zoom == -1)
-        {
-            if (!zoomdone && isdigit(*(entry->d_name)) && atoi(entry->d_name) >= 0 && atoi(entry->d_name) <= MAXZOOM)
-            {
-                this_is_zoom = 1;
-            }
-            else
-            {
-                this_is_zoom = 0;
-            }
-        }
-
-        if (this_is_zoom)
-        {
-            int z = atoi(entry->d_name);
-            if (z<0 || z>MAXZOOM || !zoom[z]) 
-            {
-                if (verbose > 1) fprintf(stderr, "zoom %d not requested\n", z);
-                continue;
-            }
-        }
-
         snprintf(path, sizeof(path), "%s/%s", search, entry->d_name);
         if (stat(path, &b))
         {
@@ -774,7 +750,7 @@ static void descend(const char *search, int zoomdone)
         }
         if (S_ISDIR(b.st_mode)) 
         {
-            descend(path, zoomdone || this_is_zoom);
+            descend(path);
             continue;
         }
         p = strrchr(path, '.');
@@ -829,7 +805,7 @@ void usage()
 #else
     fprintf(stderr, "--mbtiles  option not available, specify WITH_MBTILES when compiling.\n");
 #endif
-    fprintf(stderr, "--mode x   use in conjunction with --zoom or --bbox; mode=glob\n");
+    fprintf(stderr, "--mode x   use in conjunction with --bbox; mode=glob\n");
     fprintf(stderr, "           is faster if you extract more than 10 percent of\n");
     fprintf(stderr, "           files, and mode=stat is faster otherwise.\n");
 #ifdef WITH_SHAPE
@@ -840,15 +816,13 @@ void usage()
 #else
     fprintf(stderr, "--shape    option not available, specify WITH_SHAPE when compiling.\n");
 #endif
-    fprintf(stderr, "--zoom x   specify a single zoomlevel, a number of comma separated\n");
-    fprintf(stderr, "           zoom levels, or z0-z1 zoom ranges to convert (default: all).\n");
 #ifdef WITH_ZIP
     fprintf(stderr, "--zip      instead of writing single tiles to output directory,\n");
     fprintf(stderr, "           write a zip file (\"target\" is a file name then.)\n");
 #endif
     fprintf(stderr, "--verbose  talk more.\n");
     fprintf(stderr, "\n");
-    fprintf(stderr, "--zoom and --bbox don't make sense with --list;\n");
+    fprintf(stderr, "--bbox doesn't make sense with --list;\n");
     fprintf(stderr, "--mbtiles and --zip are mutually exclusive;\n");
     fprintf(stderr, "--bbox can be used with --shape but a tile for which no target is\n");
     fprintf(stderr, "defined will not be output even when inside the --bbox range.\n");
@@ -864,25 +838,6 @@ int handle_bbox(char *arg)
         token = strtok(NULL, ",");
     }
     return (bbi==4 && token==NULL);
-}
-
-int handle_zoom(char *arg)
-{
-    char *token = strtok(arg, ",");
-    while(token)
-    {
-        int fromz = atoi(token);
-        int toz = atoi(token);
-        char *minus = strchr(token, '-');
-        if (minus)
-        {
-            toz = atoi(minus+1);
-        }
-        if (fromz<0 || toz<0 || fromz>MAXZOOM || toz>MAXZOOM || toz<fromz || !isdigit(*token)) return 0;
-        for (int i=fromz; i<=toz; i++) zoom[i]=1;
-        token = strtok(NULL, ",");
-    }
-    return 1;
 }
 
 #ifdef WITH_MBTILES
@@ -971,8 +926,6 @@ int main(int argc, char **argv)
 {
     int c;
     int list = 0;
-    for (int i=0; i<=MAXZOOM; i++) zoom[i]=0;
-    int zoomset = 0;
 
 #ifdef WITH_SHAPE
     OGRRegisterAll();
@@ -998,7 +951,6 @@ int main(int argc, char **argv)
             {"help", 0, 0, 'h'},
             {"bbox", 1, 0, 'b'},
             {"mode", 1, 0, 'm'},
-            {"zoom", 1, 0, 'z'},
 #ifdef WITH_SHAPE
             {"shape", 0, 0, 's'},
 #endif
@@ -1057,14 +1009,6 @@ int main(int argc, char **argv)
                     return -1;
                 }
                 break;
-            case 'z':
-                zoomset = 1;
-                if (!handle_zoom(optarg))
-                {
-                    fprintf(stderr, "invalid zoom argument - must be of the form zoom or z0,z1,z2... or z0-z1\n");
-                    return -1;
-                }
-                break;
             case 'm': 
                 if (!strcmp(optarg, "glob"))
                 {
@@ -1091,8 +1035,6 @@ int main(int argc, char **argv)
                 break;
         }
     }
-
-    if (!zoomset) for (int i=0; i<=MAXZOOM; i++) zoom[i]=1;
 
     if (optind >= argc-1)
     {
@@ -1144,7 +1086,7 @@ int main(int argc, char **argv)
     }
     else
     {
-        descend(source, 0);
+        descend(source);
     }
 
 #ifdef WITH_MBTILES
