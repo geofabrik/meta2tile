@@ -23,7 +23,7 @@ There used to be a --zoom option to limit the output to certain zoom levels but 
 
 Notes for zip output:
 * libzip builds the whole zip file in RAM, so be sure to have enough of that when using --zip.
-* all versions of libzip released before 10 Nov 2015 are very slow when handling large numbers of files; if you need to create zip files with several GB, it is advisable to get a recent version of libzip.
+* pre-1.1 versions of libzip are very slow when handling large numbers of files; if you need to create zip files with several GB, it is advisable to get at least version 1.1 of libzip.
 
 Note on header files:
 The four .h files are taken verbatim from openstreetmap/mod_tile. This program originally lived inside the mod_tile repository and included them directly.
