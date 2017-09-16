@@ -506,8 +506,6 @@ int expand_meta(const char *name)
         }
     }
 
-
-
     int create_dir = 0;
 
     for (int meta = 0; meta < METATILE*METATILE; meta++)
@@ -516,6 +514,15 @@ int expand_meta(const char *name)
         if (tx >= 1<<z) continue;
         int ty = y + (meta % METATILE);
         if (ty >= 1<<z) continue;
+
+        if (m->index[meta].offset + m->index[meta].size > st.st_size)
+        {
+            fprintf(stderr, "invalid header in meta tile %s\n", name);
+            munmap(buf, st.st_size);
+            close(fd);
+            return -1;
+        }
+
         int output;
         if (ty==y) create_dir = 1;
 
@@ -681,6 +688,12 @@ int expand_meta(const char *name)
 #ifdef WITH_ZIP
             int tilesize = m->index[meta].size;
             void *tiledata = malloc(tilesize);
+            if (tiledata == 0)
+            {
+                fprintf(stderr, "Cannot malloc %d bytes: %s\n", tilesize, strerror(errno));
+                exit(1);
+            }
+
             // need to make a copy since libzip expects to take ownership
             memcpy(tiledata, buf + m->index[meta].offset, tilesize);
             struct zip_source *s = zip_source_buffer(t->zip_archive, tiledata, tilesize, 1);
