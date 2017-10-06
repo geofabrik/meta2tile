@@ -47,6 +47,10 @@
 #include "zip.h"
 #endif
 
+#ifdef WITH_JPEG
+#include <gd.h>
+#endif
+
 #define MIN(x,y) ((x)<(y)?(x):(y))
 #define META_MAGIC "META"
 
@@ -55,6 +59,7 @@ static int mbtiles = 0;
 static int noduplicate = 0;
 static int zip = 0;
 static int shape = 0;
+static int tojpeg = 0;
 static int num_render = 0;
 static struct timeval start, end;
 
@@ -149,6 +154,16 @@ int path_to_xyz(const char *path, int *px, int *py, int *pz)
     return 0;
 }
 
+int ispng(char *buffer)
+{
+   return (0 == memcmp(buffer, PNG_MAGIC, 8));
+}
+
+int isjpeg(char *buffer)
+{
+	return (0 == memcmp(buffer, JPEG_MAGIC, 2));
+}
+
 #ifdef WITH_ZIP
 void setup_zipfiles()
 {
@@ -189,6 +204,25 @@ void shutdown_zipfiles()
     }
 }
 #endif
+
+#ifdef WITH_JPEG
+// creates jpeg from png
+void make_jpeg(char **buffer, size_t *len)
+{
+    gdImagePtr im = gdImageCreateFromPngPtr(*len, *buffer);
+    if (!im)
+    {
+        *buffer = 0;
+        return;
+    }
+    int ilen;
+    *buffer = gdImageJpegPtr(im, &ilen, 75);
+    *len = ilen;
+    gdImageDestroy(im);
+    return;
+}
+#endif
+
 
 #ifdef WITH_MBTILES
 // this creates the mbtiles file(s) and sets them up for inserting.
@@ -414,7 +448,6 @@ int expand_meta(const char *name)
 {
     int fd;
     char header[4096];
-    const char *filetype;
     int x, y, z;
     size_t pos;
     void *buf;
@@ -485,28 +518,17 @@ int expand_meta(const char *name)
         }
     }
 
-    // determine file type from first tile in meta
-    // (mbtiles is type agnostic)
-    if (!mbtiles)
-    {
-        if (!memcmp(buf + m->index[0].offset, JPEG_MAGIC, 2))
-        {
-            filetype = "jpg";
-        }
-        else if (!memcmp(buf + m->index[0].offset, PNG_MAGIC, 8))
-        {
-            filetype = "png";
-        }
-        else
-        {
-            fprintf(stderr, "cannot detect image type in meta file %s\n", name);
-            munmap(buf, st.st_size);
-            close(fd);            
-            return -1;
-        }
-    }
-
     int create_dir = 0;
+    int file_is_png = ispng(buf + pos + m->index[0].offset);
+    int file_is_jpeg = isjpeg(buf + pos + m->index[0].offset);
+
+	if (!file_is_png && !file_is_jpeg)
+	{
+        fprintf(stderr, "cannot detect image type in meta file %s\n", name);
+        munmap(buf, st.st_size);
+        close(fd);
+        return -1;
+	}
 
     for (int meta = 0; meta < METATILE*METATILE; meta++)
     {
@@ -590,7 +612,7 @@ int expand_meta(const char *name)
                 create_dir = 0;
             }
 
-            sprintf(path, "%s/%d/%d/%d.%s", t->pathname, z, tx, ty, filetype);
+            sprintf(path, "%s/%d/%d/%d.%s", t->pathname, z, tx, ty, (file_is_jpeg || tojpeg) ? "jpg" : "png");
             output = open(path, O_WRONLY | O_TRUNC | O_CREAT, 0666);
             if (output == -1)
             {
@@ -604,7 +626,22 @@ int expand_meta(const char *name)
             while (pos < m->index[meta].size) 
             {
                 size_t len = m->index[meta].size - pos;
-                int written = write(output, buf + pos + m->index[meta].offset, len);
+                char *data = buf + pos + m->index[meta].offset;
+#ifdef WITH_JPEG
+                if (!file_is_jpeg)
+                {
+                    if (tojpeg) make_jpeg(&data, &len);
+                    if (!data)
+                    {
+                        fprintf(stderr, "Failed to create JPEG image %s\n", path);
+                        close(output);
+                        unlink(path);
+                        pos += m->index[meta].size - pos;
+                        continue;
+                    }
+                }
+#endif
+                int written = write(output, data, len);
                 if (written < 0) 
                 {
                     fprintf(stderr, "Failed to write data to file %s. Reason: %s\n", path, strerror(errno));
@@ -621,6 +658,9 @@ int expand_meta(const char *name)
                 {
                     break;
                 }
+#ifdef WITH_JPEG
+                if (tojpeg && !file_is_jpeg) free(data);
+#endif
             }
             close(output);
             if (verbose) printf("Produced tile: %s\n", path);
@@ -630,11 +670,14 @@ int expand_meta(const char *name)
 #ifdef WITH_MBTILES
             ty = (1<<z)-ty-1;
 
+            char *tiledata = buf + m->index[meta].offset;
+            size_t tilesize = m->index[meta].size;
+#ifdef WITH_JPEG
+	        if (tojpeg && !file_is_jpeg) make_jpeg(&tiledata, &tilesize);
+#endif
             if (noduplicate)
             {
                 unsigned char md[16];
-                void *tiledata = buf + m->index[meta].offset;
-                int tilesize = m->index[meta].size;
                 MD5(tiledata, tilesize, md);
                 const char *md_tmp;
                 char md_hex[33];
@@ -671,7 +714,7 @@ int expand_meta(const char *name)
                 sqlite3_bind_int(t->sqlite_tile_insert, 1, z);
                 sqlite3_bind_int(t->sqlite_tile_insert, 3, tx);
                 sqlite3_bind_int(t->sqlite_tile_insert, 2, ty);
-                sqlite3_bind_blob(t->sqlite_tile_insert, 4, buf + m->index[meta].offset, m->index[meta].size, SQLITE_STATIC);
+                sqlite3_bind_blob(t->sqlite_tile_insert, 4, tiledata, tilesize, SQLITE_STATIC);
                 if (sqlite3_step(t->sqlite_tile_insert) != SQLITE_DONE)
                 {
                     fprintf(stderr, "Failed to insert tile z=%d x=%d y=%d: %s\n", z, tx, ty, sqlite3_errmsg(t->sqlite_db));
@@ -681,24 +724,39 @@ int expand_meta(const char *name)
                 }
             }
             if (verbose) printf("Inserted tile %d/%d/%d into %s\n", z, tx, ty, t->pathname);
+#ifdef WITH_JPEG
+            if (tojpeg && !file_is_jpeg) gdFree(tiledata);
+#endif
 #endif
         }
         else if (zip)
         {
 #ifdef WITH_ZIP
-            int tilesize = m->index[meta].size;
-            void *tiledata = malloc(tilesize);
-            if (tiledata == 0)
+            size_t tilesize = m->index[meta].size;
+            char *tiledata = buf + m->index[meta].offset;
+#ifdef WITH_JPEG
+            if (tojpeg && !file_is_jpeg)
             {
-                fprintf(stderr, "Cannot malloc %d bytes: %s\n", tilesize, strerror(errno));
-                exit(1);
-            }
-
-            // need to make a copy since libzip expects to take ownership
-            memcpy(tiledata, buf + m->index[meta].offset, tilesize);
+                make_jpeg(&tiledata, &tilesize);
+			}
+			else
+			{
+#endif
+                // need to make a copy since libzip expects to take ownership
+                // not needed in the jpeg case where make_jpeg allocates new memory
+				tiledata = malloc(tilesize);
+                if (tiledata == 0)
+                {
+                    fprintf(stderr, "Cannot malloc %ld bytes: %s\n", tilesize, strerror(errno));
+                    exit(1);
+                }
+				memcpy(tiledata, buf + m->index[meta].offset, tilesize);
+#ifdef WITH_JPEG
+			}
+#endif
             struct zip_source *s = zip_source_buffer(t->zip_archive, tiledata, tilesize, 1);
             char filename[PATH_MAX];
-            sprintf(filename, "%d/%d/%d.%s", z, tx, ty, filetype);
+            sprintf(filename, "%d/%d/%d.%s", z, tx, ty, (file_is_jpeg || tojpeg) ? "jpg" : "png");
             if (!s || zip_add(t->zip_archive, filename, s) < 0)
             {
                 fprintf(stderr, "Failed to insert tile z=%d x=%d y=%d into zip file: %s\n", z, tx, ty, zip_strerror(t->zip_archive));
@@ -828,6 +886,9 @@ void usage()
     fprintf(stderr, "           that lie inside the respective polygon.\n");
 #else
     fprintf(stderr, "--shape    option not available, specify WITH_SHAPE when compiling.\n");
+#endif
+#ifdef WITH_JPEG
+    fprintf(stderr, "--tojpeg   convert PNG metatiles to JPG files\n");
 #endif
 #ifdef WITH_ZIP
     fprintf(stderr, "--zip      instead of writing single tiles to output directory,\n");
@@ -967,6 +1028,9 @@ int main(int argc, char **argv)
 #ifdef WITH_SHAPE
             {"shape", 0, 0, 's'},
 #endif
+#ifdef WITH_JPEG
+            {"tojpeg", 0, 0, 'j'},
+#endif
             {0, 0, 0, 0}
         };
 
@@ -979,6 +1043,9 @@ int main(int argc, char **argv)
 #endif
 #ifdef WITH_SHAPE
         "s"
+#endif
+#ifdef WITH_JPEG
+        "j"
 #endif
         , long_options, &option_index);
         if (c == -1)
@@ -1042,6 +1109,11 @@ int main(int argc, char **argv)
 #if defined WITH_SHAPE
             case 's': 
                 shape = 1;
+                break;
+#endif
+#if defined WITH_JPEG
+            case 'j':
+                tojpeg = 1;
                 break;
 #endif
             default:
