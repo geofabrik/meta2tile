@@ -519,8 +519,8 @@ int expand_meta(const char *name)
     }
 
     int create_dir = 0;
-    int file_is_png = ispng(buf + pos + m->index[0].offset);
-    int file_is_jpeg = isjpeg(buf + pos + m->index[0].offset);
+    int file_is_png = ispng(buf + m->index[0].offset);
+    int file_is_jpeg = isjpeg(buf + m->index[0].offset);
 
 	if (!file_is_png && !file_is_jpeg)
 	{
