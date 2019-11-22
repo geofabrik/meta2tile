@@ -1085,7 +1085,7 @@ int main(int argc, char **argv)
             case 'b':
                 if (!handle_bbox(optarg))
                 {
-                    fprintf(stderr, "invalid bbox argument - must be of the form east,south,west,north\n");
+                    fprintf(stderr, "invalid bbox argument - must be of the form west,south,east,north\n");
                     return -1;
                 }
                 break;
