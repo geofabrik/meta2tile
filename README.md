@@ -7,6 +7,7 @@ Convert .meta files found in source dir to .png in target dir, using the standar
 
 Options:
 * bbox x ::  specify minlon,minlat,maxlon,maxlat to extract only meta tiles intersecting that bbox (default: world).
+* zoom z ::  specify maxzoom to extract only meta tiles up to that zoom level (default: all available zoom levels).
 * list ::  instead of converting all meta tiles in input directory, convert only those given (one per line) on stdin.
 * mbtiles ::  instead of writing single tiles to output directory, write a MBTiles file ("target" is a file name then.)
 * meta k=v :: set k=v in the MBTiles metadata table (MBTiles spec mandates use of name, type, version, description, format).  Can occur multiple times.

@@ -111,6 +111,8 @@ struct metadata
 
 int mode = MODE_GLOB;
 
+int max_zoom = -1;
+
 float bbox[4] = {-180.0, -90.0, 180.0, 90.0};
 
 int path_to_xyz(const char *path, int *px, int *py, int *pz)
@@ -455,6 +457,12 @@ int expand_meta(const char *name)
     if (verbose>1) fprintf(stderr, "expand_meta %s\n", name);
 
     if (path_to_xyz(name, &x, &y, &z)) return -1;
+
+    if (max_zoom >= 0 && z > max_zoom)
+    {
+	if (verbose>1) printf("z=%d is larger than max_zoom\n", z);
+	return -8;
+    }
 
     int limit = (1 << z);
     limit = MIN(limit, METATILE);
@@ -863,6 +871,8 @@ void usage()
     fprintf(stderr, "\nOptions:\n");
     fprintf(stderr, "--bbox x   specify minlon,minlat,maxlon,maxlat to extract only\n");
     fprintf(stderr, "           meta tiles intersecting that bbox (default: world).\n");
+    fprintf(stderr, "--zoom z   specify maxzoom to extract only meta tiles up to\n");
+    fprintf(stderr, "           that zoom level (default: all available zoom levels).\n");
     fprintf(stderr, "--list     instead of converting all meta tiles in input directory,\n");
     fprintf(stderr, "           convert only those given (one per line) on stdin.\n");
 #ifdef WITH_MBTILES
@@ -1024,6 +1034,7 @@ int main(int argc, char **argv)
             {"verbose", 0, 0, 'v'},
             {"help", 0, 0, 'h'},
             {"bbox", 1, 0, 'b'},
+            {"zoom", 1, 0, 'z'},
             {"mode", 1, 0, 'm'},
 #ifdef WITH_SHAPE
             {"shape", 0, 0, 's'},
@@ -1106,6 +1117,9 @@ int main(int argc, char **argv)
                     return -1;
                 }
                 break;
+	    case 'z':
+                max_zoom = atoi(optarg);
+		break;
 #if defined WITH_SHAPE
             case 's': 
                 shape = 1;
