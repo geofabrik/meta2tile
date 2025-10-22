@@ -87,7 +87,6 @@ struct target
 #endif
 } *target_list = NULL;
 
-struct target *matched_target;
 
 // in WITH_SHAPE mode, we select the right target geometry
 // with the help of an R-Tree.
@@ -108,6 +107,10 @@ struct metadata
 #define MODE_STAT 1
 #define MODE_GLOB 2
 #define MAXZOOM 20
+
+#define MAX_MATCHED_TARGETS 256
+struct target *matched_target[MAX_MATCHED_TARGETS];
+size_t matched_target_count;
 
 int mode = MODE_GLOB;
 
@@ -423,8 +426,6 @@ double tiley2lat(int y, int z)
 }
 
 #ifdef WITH_SHAPE
-// callback function for tree search. We don't currently support multiple
-// matches - last one wins.
 void tree_query_callback(void *item, void *userdata)
 {
     // this is called on a bbox match but is it a *real* match?
@@ -432,7 +433,12 @@ void tree_query_callback(void *item, void *userdata)
     GEOSGeometry *g = (GEOSGeometry *) userdata;
     if (GEOSPreparedIntersects(t->prepgeom, g))
     {
-        matched_target = (struct target *) item;
+        if (matched_target_count == MAX_MATCHED_TARGETS)
+        {
+           fprintf(stderr, "more than %d targets matching, some matches ignored\n", MAX_MATCHED_TARGETS);
+           return;
+        }
+        matched_target[matched_target_count++] = (struct target *) item;
     }
 }
 #endif
@@ -556,11 +562,10 @@ int expand_meta(const char *name)
         int output;
         if (ty==y) create_dir = 1;
 
-        struct target *t;
 #ifdef WITH_SHAPE
         if (shape)
         {
-            matched_target = NULL;
+            matched_target_count = 0;
 
             double x0 = tilex2long(tx,z);
             double x1 = tilex2long(tx+1,z);
@@ -587,21 +592,25 @@ int expand_meta(const char *name)
 
             GEOSSTRtree_query(target_tree, poly, tree_query_callback, (void *) poly);
             GEOSGeom_destroy(poly);
-            if (!matched_target) 
+            if (!matched_target_count) 
             {
                 if (verbose > 1) fprintf(stderr, "no matching polygon for tile %d/%d/%d\n", z, tx, ty);
                 continue;
             }
-            t = matched_target;
         }
         else
         {
 #endif
         // if not in SHAPE mode, simply use the one existing target
-        t = target_list;
+        matched_target_count = 1;
+        matched_target[0] = target_list;
 #ifdef WITH_SHAPE
         }
 #endif
+
+        for (int i=0; i<matched_target_count; i++)
+        {
+            struct target *t = matched_target[i];
 
         if (!mbtiles && !zip)
         {
@@ -772,6 +781,7 @@ int expand_meta(const char *name)
             }
 #endif
         }
+        } // for target loop
     }
 
     munmap(buf, st.st_size);
