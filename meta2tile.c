@@ -107,6 +107,7 @@ struct metadata
 #define MODE_STAT 1
 #define MODE_GLOB 2
 #define MAXZOOM 20
+#define MAXDEPTH 20
 
 #define MAX_MATCHED_TARGETS 256
 struct target *matched_target[MAX_MATCHED_TARGETS];
@@ -115,16 +116,17 @@ size_t matched_target_count;
 int mode = MODE_GLOB;
 
 int max_zoom = -1;
+int tiledir_depth = 5;
 
 float bbox[4] = {-180.0, -90.0, 180.0, 90.0};
 
 int path_to_xyz(const char *path, int *px, int *py, int *pz)
 {
-    int i, n, hash[5], x, y, z;
+    int i, n, hash[MAXDEPTH], x, y, z;
     char copy[PATH_MAX];
     strcpy(copy, path);
     char *slash = rindex(copy, '/');
-    int c=5;
+    int c=tiledir_depth;
     while (slash && c)
     {
         *slash = 0;
@@ -141,7 +143,7 @@ int path_to_xyz(const char *path, int *px, int *py, int *pz)
     *pz = atoi(slash+1);
 
     x = y = 0;
-    for (i=0; i<5; i++)
+    for (i=0; i<tiledir_depth; i++)
     {
         if (hash[i] < 0 || hash[i] > 255)
         {
@@ -885,6 +887,7 @@ void usage()
     fprintf(stderr, "           that zoom level (default: all available zoom levels).\n");
     fprintf(stderr, "--list     instead of converting all meta tiles in input directory,\n");
     fprintf(stderr, "           convert only those given (one per line) on stdin.\n");
+    fprintf(stderr, "--depth d  use non-standard tile directory depth (default is 5).\n");
 #ifdef WITH_MBTILES
     fprintf(stderr, "--mbtiles  instead of writing single tiles to output directory,\n");
     fprintf(stderr, "           write a MBTiles file (\"target\" is a file name then.)\n");
@@ -1045,6 +1048,7 @@ int main(int argc, char **argv)
             {"help", 0, 0, 'h'},
             {"bbox", 1, 0, 'b'},
             {"zoom", 1, 0, 'z'},
+            {"depth", 1, 0, 'd'},
             {"mode", 1, 0, 'm'},
 #ifdef WITH_SHAPE
             {"shape", 0, 0, 's'},
@@ -1055,7 +1059,7 @@ int main(int argc, char **argv)
             {0, 0, 0, 0}
         };
 
-        c = getopt_long(argc, argv, "vhlb:m:z:"
+        c = getopt_long(argc, argv, "vhlb:m:z:d:"
 #ifdef WITH_MBTILES
         "tna:"
 #endif
@@ -1129,6 +1133,13 @@ int main(int argc, char **argv)
                 break;
 	    case 'z':
                 max_zoom = atoi(optarg);
+	    case 'd':
+                tiledir_depth = atoi(optarg);
+                if (tiledir_depth > MAXDEPTH)
+                {
+                    fprintf(stderr, "depth must not be larger than %d\n", MAXDEPTH);
+                    return -1;
+                }
 		break;
 #if defined WITH_SHAPE
             case 's': 
